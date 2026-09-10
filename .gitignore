@@ -1,0 +1,15 @@
+# Secretos: nunca en el repo
+.env
+
+# Datos persistentes de FTS (BD SQLite, certificados, logs, DPs)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Terrain/elevation working files (grande, se importa a WinTAK a mano)
+dted/
+dted_work/
+*.tif

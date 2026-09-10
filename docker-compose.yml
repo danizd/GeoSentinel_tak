@@ -1,0 +1,159 @@
+services:
+
+  freetakserver:
+    # FTS 2.2.1 (v2_2_1 tag); pin by digest after first pull per ADR 0005:
+    #   docker buildx imagetools inspect ghcr.io/freetakteam/freetakserver:v2_2_1
+    image: ghcr.io/freetakteam/freetakserver:v2_2_1
+    # These GHCR tags ship amd64-only; Docker runs them via qemu on ARM64.
+    platform: linux/amd64
+    container_name: freetakserver
+    hostname: freetakserver
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    # ADR 0008: la imagen EOL de FTS 2.2.1 NO reenvía CoT a los clientes
+    # (falta el paquete 'Catalog' de digitalpy). El canal CoT publicado lo
+    # sirve el servicio cot-relay (abajo); los puertos CoT del core quedan
+    # internos y sin uso. 8080/8443/19023/5000 siguen internos para NPM.
+    volumes:
+      # FTS corre como UID 999 (cuenta de sistema, ver ADR 0007):
+      #   sudo chown -R 999:999 data/core
+      - ./data/core:/opt/fts
+    environment:
+      # ---- Secretos (en .env, nunca en el repo) ----
+      FTS_FED_PASSWORD: "${FTS_FED_PASSWORD}"
+      FTS_CLIENT_CERT_PASSWORD: "${FTS_CLIENT_CERT_PASSWORD}"
+      FTS_WEBSOCKET_KEY: "${FTS_WEBSOCKET_KEY}"
+      FTS_SECRET_KEY: "${FTS_SECRET_KEY}"
+      # ---- Networking: FTS anuncia el dominio público del DP (ADR 0003) ----
+      # Las direcciones de ESCUCHA son los defaults del contenedor; lo que se
+      # anuncia a los clientes es el dominio público del servicio DataPackage.
+      FTS_DP_ADDRESS: "dp.movilab.es"
+      FTS_USER_ADDRESS: "dp.movilab.es"
+      FTS_API_ADDRESS: "freetakserver"
+      FTS_COT_PORT: 8087
+      FTS_SSLCOT_PORT: 8089
+      FTS_API_PORT: 19023
+      FTS_DP_PORT: 8080
+      # ---- Retención: demo de estado en vivo, BD plana (decisión Q13) ----
+      FTS_COT_TO_DB: "False"
+      FTS_LOG_LEVEL: "info"
+      FTS_MAINLOOP_DELAY: "100"
+
+  freetakserver-ui:
+    # UI master (current release line); pin by digest after first pull per ADR 0005:
+    #   docker buildx imagetools inspect ghcr.io/freetakteam/ui:master
+    image: ghcr.io/freetakteam/ui:master
+    platform: linux/amd64
+    container_name: freetakserver-ui
+    hostname: freetakserver-ui
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    # NAMED volume required: a bind mount at /home/freetak would shadow the
+    # image's /home/freetak/docker-run.sh entrypoint (container fails to start).
+    volumes:
+      - fts-ui-data:/home/freetak
+      # La UI comparte /opt/fts con el core: LEE FTSConfig.yaml (que genera el
+      # core) y ESCRIBE su propia BD (default del config.py:
+      # sqlite:////opt/fts/FTSServer-UI.db). Ambos corren como UID 999, así que
+      # el mount debe ser de ESCRITURA (con :ro la UI muere: unable to open
+      # database file).
+      - ./data/core:/opt/fts
+    environment:
+      # La UI usa FTS_IP/FTS_API_PORT/FTS_API_PROTO para sus llamadas
+      # server-side al core por la red Docker interna. No necesita proxy
+      # host en NPM ni publicación de puerto al host.
+      FTS_IP: "freetakserver"
+      FTS_API_PORT: "19023"
+      FTS_API_PROTO: "http"
+      FTS_UI_PORT: "5000"
+      FTS_UI_WSKEY: "${FTS_WEBSOCKET_KEY}"
+      FTS_API_KEY: "Bearer ${FTS_API_TOKEN}"
+      # FTS_UI_EXPOSED_IP se usa como BIND de eventlet.listen (config.py de la
+      # UI). Poniendo el dominio "fts.movilab.es" -> Errno 99 'Cannot assign
+      # requested address'. Debe escuchar en 0.0.0.0; NPM ya proxea (443) al
+      # contenedor. El dominio público de enlaces lo maneja NPM.
+      FTS_UI_EXPOSED_IP: "0.0.0.0"
+      FTS_UI_EXPOSED_PROTO: "https"
+      FTS_MAP_EXPOSED_IP: "127.0.0.1"
+      FTS_MAP_PORT: "8000"
+      FTS_MAP_PROTO: "http"
+
+  # ---- Relay CoT (ADR 0008) ----
+  # Hub CoT mínimo que SÍ reenvía eventos a todos los clientes conectados,
+  # cosa que la imagen de FTS 2.2.1 no consigue. Ocupa el puerto publicado
+  # 8087 (fase humo); en fase producción (8089 TLS) se añadirá el listener
+  # TLS con los certs de FTS. WinTAK y el simulador no cambian de config:
+  # mismo host y puerto, ahora sirviéndolos este contenedor.
+  cot-relay:
+    image: python:3.11-slim
+    container_name: cot-relay
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    ports:
+      - "8087:8087"   # CoT claro (fase humo; cerrar tras validar)
+    volumes:
+      - ./cot-relay.py:/cot-relay.py:ro
+      # Certs del listener TLS (ADR 0009): los genera data/certs/ y los usa
+      # el feeder deepstate por la red Docker. 8089 NO se publica: solo
+      # consumo interno, hasta la fase producción de ADR 0002.
+      - ./data/certs:/certs:ro
+    environment:
+      RELAY_HOST: "0.0.0.0"
+      RELAY_PORT: "8087"
+      RELAY_TLS_PORT: "8089"
+      RELAY_TLS_CERT: "/certs/server.pem"
+      RELAY_TLS_KEY: "/certs/server.key"
+    command: ["python", "/cot-relay.py"]
+
+  # ---- Feeder deepstatemap.live (ADR 0009) ----
+  # Datos OSINT REALES del conflicto de Ucrania -> CoT -> relay (TLS interno).
+  # El feeder (Node.js upstream) solo habla ssl:// y exige cert+key de cliente
+  # (checkFile aborta si faltan); usa rejectUnauthorized:false, así que vale un
+  # certificado autofirmado (data/certs/, ver README). Imagen oficial multi-arch
+  # (sin qemu en ARM64, a diferencia de FTS/UI, ADR 0007). PULL_INTERVAL mínimo
+  # real del feeder: 300 s (el código lo clamp a 300).
+  deepstate:
+    image: ghcr.io/sgofferj/tak-feeder-deepstate:latest
+    container_name: tak-feeder-deepstate
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    volumes:
+      - ./data/certs:/certs:ro
+    environment:
+      REMOTE_SERVER_URL: "ssl://cot-relay:8089"
+      REMOTE_SSL_USER_CERTIFICATE: "/certs/server.pem"
+      REMOTE_SSL_USER_KEY: "/certs/server.key"
+      PULL_INTERVAL: "300"
+      LOGCOT: "false"
+    depends_on:
+      - cot-relay
+
+  # ---- Simulador (ADR 0004): perfil "sim", inactivo hasta que lo actives ----
+  #   docker compose --profile sim up -d
+  simulator:
+    image: python:3.11-slim
+    container_name: fts-simulator
+    profiles: ["sim"]
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    volumes:
+      - ./simulator.py:/simulator.py:ro
+    environment:
+      FTS_HOST: "cot-relay"        # el relay reenvía a todos los clientes
+      FTS_PORT: "8087"
+    command: ["python", "/simulator.py"]
+    depends_on:
+      - cot-relay
+
+networks:
+  proxy_network:
+    external: true
+    name: proxy_network
+
+volumes:
+  fts-ui-data:
