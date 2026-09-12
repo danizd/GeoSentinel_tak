@@ -167,6 +167,37 @@ services:
     depends_on:
       - cot-relay
 
+  # ---- Servidor de vídeo RTSP (ADR 0012) ----
+  # MediaMTX recibe el directo de una cámara y lo re-sirve a los clientes TAK.
+  # Publican: el móvil con el plugin TAK ICU (alias = ruta del stream) y el PC
+  # con FFmpeg y la webcam. Consume WinTAK desde su herramienta "Video".
+  # El vídeo NO viaja por CoT: CoT solo lleva el puntero (la URL del feed),
+  # así que esto es un canal aparte del relay, con su propio puerto.
+  # Sin perfil, como adsb y deepstate: un servidor RTSP ocioso no consume nada
+  # y el móvil debe poder publicar en cuanto se arranca el proyecto.
+  # Imagen multi-arch (amd64/arm64/arm): en ARM64 es nativa, sin qemu (ADR 0007).
+  # Tag fijo, no `latest` (misma política que el resto de servicios, ADR 0005).
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.0
+    container_name: mediamtx
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    ports:
+      - "8554:8554"   # RTSP: publicar (móvil/PC) y ver (WinTAK)
+      - "8888:8888"   # HLS: comprobación rápida en el navegador
+    volumes:
+      # Config versionada en el repo (mediamtx.yml). Las credenciales NO están
+      # en el fichero: salen de .env por las dos variables de abajo.
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      # MediaMTX sobrescribe por posición los parámetros de una lista, así que
+      # esto reemplaza el user/pass de respaldo de mediamtx.yml.
+      MTX_AUTHINTERNALUSERS_0_USER: "takvideo"
+      # `:?` aborta el arranque si la variable no está en .env, en vez de
+      # dejar la contraseña en blanco sin que nadie se entere.
+      MTX_AUTHINTERNALUSERS_0_PASS: "${MEDIAMTX_PASSWORD:?define MEDIAMTX_PASSWORD en .env (ver .env.example)}"
+
   # ---- Simulador (ADR 0004): perfil "sim", inactivo hasta que lo actives ----
   #   docker compose --profile sim up -d
   simulator:

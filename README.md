@@ -17,15 +17,16 @@ CoT a los clientes (ADR 0008), así que el canal CoT lo sirve cot-relay.
 ## Estructura
 
 ```text
-├── docker-compose.yml    # core + UI + cot-relay + simulador (perfil "sim")
+├── docker-compose.yml    # core + UI + cot-relay + deepstate + adsb + mediamtx
 ├── .env.example          # plantilla de secretos -> copiar a .env
 ├── simulator.py          # telemetría CoT (PC o servidor)
 ├── cot-relay.py          # hub CoT que reenvía a todos los clientes (ADR 0008)
 ├── adsb-feeder.py        # feeder ADS-B: aviones reales por CoT (ADR 0010)
+├── mediamtx.yml          # servidor RTSP de vídeo: configuración (ADR 0012)
 ├── start.bat             # arranque del simulador en el PC (Windows)
 ├── .gitignore            # protege .env, data/ y dted_work/
 ├── esri_world_imagery.xml # fuente de mapa satélite para WinTAK
-└── docs/adr/             # decisiones 0001–0011
+└── docs/adr/             # decisiones 0001–0012
 ```
 
 ## Quickstart — servidor (Oracle ARM64)
@@ -126,7 +127,8 @@ Detalle completo (incluida la conversión SRTM→DTED con GDAL): [`especificacio
 443/tcp  → Internet            # NPM: UI + DP por TLS
 8087/tcp → SOLO tu IP pública  # fase humo; cerrar tras validar
 8089/tcp → Internet            # fase producción: CoT TLS con cert cliente
-8554/tcp → Internet            # opcional: vídeo RTSP (ver "Vídeo en directo")
+8554/tcp → Internet            # vídeo RTSP: publicar y ver (ADR 0012)
+8888/tcp → SOLO tu IP pública  # opcional: HLS para comprobar el vídeo en el navegador
 ```
 
 Nada más: 5000/8080/8443/19023 quedan internos (NPM o red Docker).
@@ -188,44 +190,20 @@ El vídeo **no viaja por el canal CoT**: CoT solo transporta el puntero (la URL 
 
 ### Paso 1 — Servidor RTSP MediaMTX (común a los dos casos)
 
-Añade el servicio al `docker-compose.yml` (perfil `video`, igual que el simulador: no consume nada hasta que lo activas):
-
-```yaml
-  # ---- Servidor de vídeo RTSP (opcional) ----
-  mediamtx:
-    image: bluenviron/mediamtx:latest
-    container_name: mediamtx
-    profiles: ["video"]
-    restart: unless-stopped
-    networks:
-      - proxy_network
-    ports:
-      - "8554:8554"   # RTSP: publicar y ver
-      - "8888:8888"   # HLS: comprobación rápida en el navegador
-    volumes:
-      - ./data/mediamtx/mediamtx.yml:/mediamtx.yml:ro
-    # ARM64: imagen multi-arch nativa, NO necesita qemu (ADR 0007).
-```
-
-Crea `data/mediamtx/mediamtx.yml` **antes** de levantar el servicio (va bajo `data/`, que está en `.gitignore`). Sin este fichero, MediaMTX arranca **sin autenticación** y cualquiera que alcance el 8554 puede publicar o ver:
-
-```yaml
-authInternalUsers:
-  - user: takvideo
-    pass: CAMBIA_ESTO        # python3 -c "import secrets; print(secrets.token_urlsafe(16))"
-    ips: []
-    permissions:
-      - action: publish
-      - action: read
-      - action: playback
-```
+El servicio **ya está** en `docker-compose.yml` y su configuración en `mediamtx.yml` (autenticación obligatoria y cualquier ruta creada al publicar), así que no hay que pegar nada: solo darle la contraseña y arrancarlo. El usuario es fijo (`takvideo`) y la contraseña sale de `.env`.
 
 ```bash
-mkdir -p data/mediamtx
-# crear ahí mediamtx.yml con el contenido de arriba
-docker compose --profile video up -d
-docker compose logs -f mediamtx
+cd ~/docker/GeoSentinel_tak       # la carpeta del despliegue (en el quickstart, ~/freetak)
+
+# 1. Contraseña del vídeo: añade UNA línea a .env (no la repitas si ya está)
+python3 -c "import secrets; print('MEDIAMTX_PASSWORD=' + secrets.token_urlsafe(16))" >> .env
+
+# 2. Arrancar (sin perfil: igual que el relay y los feeders)
+docker compose up -d mediamtx
+docker compose logs -f mediamtx     # verás los listeners RTSP y HLS abiertos
 ```
+
+> Sin `MEDIAMTX_PASSWORD` en `.env`, `docker compose` **aborta** con un mensaje explícito (`required variable MEDIAMTX_PASSWORD is missing a value`) en vez de arrancar el servidor con la contraseña en blanco. Es a propósito: el 8554 se publica a Internet.
 
 Y abre el **8554/tcp** en Oracle Security List / ufw (el **8888** solo si quieres comprobar por navegador). NPM no puede proxear RTSP: es socket TCP directo, igual que el canal CoT.
 
@@ -284,6 +262,7 @@ rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/MOVILGALICIA
 
 - En VLC se ve pero WinTAK no → activa **Reliable P2P Connection** (muchos operadores bloquean el UDP del RTSP) y revisa usuario/contraseña.
 - No se ve en ninguna parte y el log de MediaMTX no registra publicación → el publicador no llega: revisa **8554/tcp** en Oracle Security List y ufw, y la IP del servidor.
+- Rechaza la publicación o pide credenciales (`authentication failed` en el log) → usuario `takvideo` y la contraseña de `MEDIAMTX_PASSWORD`. Si acabas de cambiarla, `docker compose up -d mediamtx`: las variables de entorno se leen al arrancar, no se recargan en caliente.
 - TAK ICU no arranca → **fix GPS** activo y **alias sin espacios**.
 - Se ve el vídeo pero **no aparece ningún icono de cámara en el mapa**: es lo esperado. El puntero del feed viajaría en un evento CoT `b-i-v` y nada del proyecto lo emite todavía.
 

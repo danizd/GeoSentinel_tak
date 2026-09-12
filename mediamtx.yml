@@ -1,0 +1,31 @@
+# Configuración de MediaMTX (servidor RTSP/HLS) — ADR 0012.
+#
+# Lo monta el servicio `mediamtx` de docker-compose.yml en /mediamtx.yml.
+# Aquí solo se declaran las claves que NO son de fábrica; el resto de
+# parámetros (RTSP 8554, RTMP 1935, HLS 8888, WebRTC 8889…) se quedan como
+# vienen en los defaults de la imagen.
+#
+# LAS CREDENCIALES NO VAN EN ESTE FICHERO (está en el repositorio): MediaMTX
+# permite sobrescribir por posición los parámetros de una lista desde el
+# entorno, así que el compose define
+#   MTX_AUTHINTERNALUSERS_0_USER -> usuario   (takvideo)
+#   MTX_AUTHINTERNALUSERS_0_PASS -> contraseña (MEDIAMTX_PASSWORD, de .env)
+# Los valores de aquí son solo el respaldo si alguien arranca el contenedor sin
+# esas variables: siguen exigiendo usuario y contraseña, nunca dejan el
+# servidor abierto (el 8554 se publica a Internet).
+
+# Autenticación interna (la de defecto). Sin esta clave, MediaMTX acepta a
+# cualquier cliente: publicar y ver el vídeo quedaría al alcance de cualquiera.
+authInternalUsers:
+  - user: CAMBIA_ESTO     # sobrescrito por MTX_AUTHINTERNALUSERS_0_USER
+    pass: CAMBIA_ESTO     # sobrescrito por MTX_AUTHINTERNALUSERS_0_PASS
+    ips: []               # lista vacía = cualquier IP de origen
+    permissions:
+      - action: publish    # publicar: TAK ICU (móvil) y FFmpeg (PC)
+      - action: read       # ver: WinTAK, VLC, navegador
+      - action: playback   # navegación dentro del stream (HLS)
+
+# Cualquier ruta se crea al publicar: el alias del móvil (MOVILGALICIA), webcam,
+# demo… Sin esto habría que declarar cada ruta una a una.
+paths:
+  all_others:
