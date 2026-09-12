@@ -125,6 +125,7 @@ Detalle completo (incluida la conversión SRTM→DTED con GDAL): [`especificacio
 443/tcp  → Internet            # NPM: UI + DP por TLS
 8087/tcp → SOLO tu IP pública  # fase humo; cerrar tras validar
 8089/tcp → Internet            # fase producción: CoT TLS con cert cliente
+8554/tcp → Internet            # opcional: vídeo RTSP (ver "Vídeo en directo")
 ```
 
 Nada más: 5000/8080/8443/19023 quedan internos (NPM o red Docker).
@@ -172,6 +173,118 @@ WinTAK necesita datos DTED para dibujar relieve. Para cualquier región del mund
 > **Resolución:** DTED nivel 1 (`.dt1`) = 90 m. Para 30 m usa `-co LEVEL=2` (archivos `.dt2`, 4× más grandes).
 
 > **Sin GDAL:** si no tienes GDAL instalado: `winget install OSGeo.GDAL` o descarga OSGeo4W.
+
+## Vídeo en directo (cámara del móvil y webcam del PC)
+
+El vídeo **no viaja por el canal CoT**: CoT solo transporta el puntero (la URL del stream), no los fotogramas. Para ver una cámara en WinTAK hacen falta dos piezas: un **servidor RTSP** donde se publica la señal (MediaMTX) y un **publicador** (el plugin TAK ICU en Android, FFmpeg en el PC). WinTAK la reproduce desde su herramienta **Video**.
+
+| Dónde | Qué hace falta |
+|---|---|
+| Móvil Android | ATAK-CIV (reproduce) + plugin **TAK ICU** (publica la cámara) |
+| PC | **FFmpeg** publicando la webcam |
+| Servidor | **MediaMTX** como servidor RTSP (paso 1, común a los dos casos) |
+| WinTAK | Herramienta **Video** apuntando al stream |
+
+### Paso 1 — Servidor RTSP MediaMTX (común a los dos casos)
+
+Añade el servicio al `docker-compose.yml` (perfil `video`, igual que el simulador: no consume nada hasta que lo activas):
+
+```yaml
+  # ---- Servidor de vídeo RTSP (opcional) ----
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mediamtx
+    profiles: ["video"]
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    ports:
+      - "8554:8554"   # RTSP: publicar y ver
+      - "8888:8888"   # HLS: comprobación rápida en el navegador
+    volumes:
+      - ./data/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    # ARM64: imagen multi-arch nativa, NO necesita qemu (ADR 0007).
+```
+
+Crea `data/mediamtx/mediamtx.yml` **antes** de levantar el servicio (va bajo `data/`, que está en `.gitignore`). Sin este fichero, MediaMTX arranca **sin autenticación** y cualquiera que alcance el 8554 puede publicar o ver:
+
+```yaml
+authInternalUsers:
+  - user: takvideo
+    pass: CAMBIA_ESTO        # python3 -c "import secrets; print(secrets.token_urlsafe(16))"
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+```
+
+```bash
+mkdir -p data/mediamtx
+# crear ahí mediamtx.yml con el contenido de arriba
+docker compose --profile video up -d
+docker compose logs -f mediamtx
+```
+
+Y abre el **8554/tcp** en Oracle Security List / ufw (el **8888** solo si quieres comprobar por navegador). NPM no puede proxear RTSP: es socket TCP directo, igual que el canal CoT.
+
+### Paso 2A — Publicar desde el móvil Android (ATAK-CIV + TAK ICU)
+
+ATAK-CIV por sí solo **no emite** la cámara: solo reproduce streams. Para publicar hace falta el plugin **TAK ICU** (gratuito, del TAK Product Center), que crea un icono de app aparte en el móvil.
+
+1. Instala ATAK desde [tak.gov](https://tak.gov): los plugins se instalan desde la propia app, la versión de Play Store los tiene restringidos.
+2. ATAK → **Settings → Plugins → TAK ICU → Install/Enable**. Aparece un **icono aparte** llamado *TAK ICU* (puede que haya que añadirlo a la pantalla de inicio).
+3. Abre **TAK ICU** → ☰ → **Settings** → **Broadcast Preferences**:
+   - **Destination Type:** `Wowza Server`
+   - **Broadcast Alias:** `MOVILGALICIA` — **una sola palabra, sin espacios** (es la ruta del stream; con un espacio el broadcast falla)
+   - **Wowza Server IP:** la IP de tu servidor
+   - **Wowza Server Port:** `8554`
+4. Con **fix GPS** (TAK ICU lo exige: sin él no ancla el vídeo al mapa y puede no arrancar), marca **Broadcast** y pulsa el botón **Broadcast/Record**.
+
+### Paso 2B — Publicar desde el PC (webcam con FFmpeg)
+
+```powershell
+winget install Gyan.FFmpeg                             # si no tienes FFmpeg
+ffmpeg -list_devices true -f dshow -i dummy            # nombre exacto de la webcam
+
+# publicar la webcam (el nombre debe ser el que ha listado el paso anterior)
+ffmpeg -f dshow -i video="HD WebCam" -c:v libx264 -preset ultrafast -tune zerolatency -f rtsp rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/webcam
+```
+
+> **Solo para tu PC, sin tocar el servidor:** descarga el binario de MediaMTX para Windows, ejecútalo en el PC y publica a `rtsp://localhost:8554/webcam`. Ni Docker, ni puertos, ni firewall — pero nadie más verá el stream.
+
+> **Vídeo en bucle en vez de webcam** (útil para la demo, no depende de lo que enfoque la cámara):
+> `ffmpeg -re -stream_loop -1 -i clip.mp4 -c copy -f rtsp rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/demo`
+
+### Paso 3 — Verlo en WinTAK
+
+WinTAK → herramienta **Video** → **+** (añadir stream):
+
+| Campo | Valor |
+|---|---|
+| Type | `rtsp` |
+| Address | IP del servidor (o `localhost` si publicas en el propio PC) |
+| Port | `8554` |
+| Path | `MOVILGALICIA` (móvil) · `webcam` (PC) |
+| Username / Password | `takvideo` / el de `mediamtx.yml` |
+| Reliable P2P Connection | **ON** — usa TCP; imprescindible si hay NAT o firewall (tu caso) |
+
+**Comprueba el stream antes de tocar WinTAK** (descarta la mayoría de los problemas):
+
+```text
+# en el navegador del PC (HLS; pide usuario y contraseña)
+http://IP_SERVIDOR:8888/MOVILGALICIA
+
+# o en VLC
+rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/MOVILGALICIA
+```
+
+**Si no se ve:**
+
+- En VLC se ve pero WinTAK no → activa **Reliable P2P Connection** (muchos operadores bloquean el UDP del RTSP) y revisa usuario/contraseña.
+- No se ve en ninguna parte y el log de MediaMTX no registra publicación → el publicador no llega: revisa **8554/tcp** en Oracle Security List y ufw, y la IP del servidor.
+- TAK ICU no arranca → **fix GPS** activo y **alias sin espacios**.
+- Se ve el vídeo pero **no aparece ningún icono de cámara en el mapa**: es lo esperado. El puntero del feed viajaría en un evento CoT `b-i-v` y nada del proyecto lo emite todavía.
 
 ## Feeder deepstatemap.live (datos OSINT de Ucrania, opcional)
 
