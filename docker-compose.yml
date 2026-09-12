@@ -13,8 +13,8 @@ services:
       - proxy_network
     # ADR 0008: la imagen EOL de FTS 2.2.1 NO reenvía CoT a los clientes
     # (falta el paquete 'Catalog' de digitalpy). El canal CoT publicado lo
-    # sirve el servicio cot-relay (abajo); los puertos CoT del core quedan
-    # internos y sin uso. 8080/8443/19023/5000 siguen internos para NPM.
+  # sirve el servicio cot-relay (abajo); los puertos CoT del core quedan
+  # internos y sin uso. 8080/8443/19023/5000 siguen internos para NPM.
     volumes:
       # FTS corre como UID 999 (cuenta de sistema, ver ADR 0007):
       #   sudo chown -R 999:999 data/core
@@ -106,6 +106,10 @@ services:
       RELAY_TLS_PORT: "8089"
       RELAY_TLS_CERT: "/certs/server.pem"
       RELAY_TLS_KEY: "/certs/server.key"
+      # ADR 0011: tope de ENVÍO a cada cliente. Un cliente que deja de leer
+      # (móvil sin cobertura, WinTAK cerrado) llena su ventana TCP y congela el
+      # hub entero; con este tope se le descarta y el resto sigue recibiendo.
+      RELAY_SEND_TIMEOUT: "5"
     command: ["python", "/cot-relay.py"]
 
   # ---- Feeder deepstatemap.live (ADR 0009) ----

@@ -25,7 +25,7 @@ CoT a los clientes (ADR 0008), así que el canal CoT lo sirve cot-relay.
 ├── start.bat             # arranque del simulador en el PC (Windows)
 ├── .gitignore            # protege .env, data/ y dted_work/
 ├── esri_world_imagery.xml # fuente de mapa satélite para WinTAK
-└── docs/adr/             # decisiones 0001–0009
+└── docs/adr/             # decisiones 0001–0011
 ```
 
 ## Quickstart — servidor (Oracle ARM64)
@@ -395,6 +395,16 @@ Notas:
 - **Monitorización**: ping periódico desde el servidor a healthchecks.io.
 
 ## Troubleshooting (WinTAK)
+
+- **Deja de llegar TODO el CoT a la vez** (aviones, Ucrania y RESCUE), aunque
+  `docker compose logs adsb` siga diciendo "N enviadas" y los clientes sigan
+  apareciendo como conectados — el log del relay se corta en seco: es el fallo
+  de ADR 0011, un cliente que dejó de leer (móvil que perdió cobertura, WinTAK
+  cerrado o PC suspendido) congelaba el hub. Comprueba con
+  `docker compose logs cot-relay | grep descartado`. Desde el parche, el relay
+  lo descarta solo en 5 s (`RELAY_SEND_TIMEOUT`) y registra
+  `cliente descartado <IP>: no lee (...)`; si ves ese aviso, ese cliente es el
+  culpable.
 
 - **Solo aparece el primer RESCUE:** causa raíz era el prólogo `<?xml ...?>` repetido en cada evento CoT del stream TCP. WinTAK solo procesaba el primer evento. Solución: `simulator.py` no incluye prólogo XML por evento.
 - **Marcadores desplazados al polo norte:** WinTAK 4.x/5.x con configuración regional española interpreta el punto decimal como separador de miles. Usar comas en GoTo o cambiar la configuración regional de Windows.

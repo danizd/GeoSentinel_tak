@@ -31,6 +31,7 @@ Uso (compose o manual):
 import os
 import socket
 import ssl
+import struct
 import threading
 import time
 
@@ -45,6 +46,16 @@ RELAY_TLS_CERT = os.environ.get("RELAY_TLS_CERT", "")
 RELAY_TLS_KEY = os.environ.get("RELAY_TLS_KEY", "")
 END_OF_EVENT = b"</event>"
 MAX_BUFFER = 1_048_576  # bytes: corta clientes que nunca cierran un evento
+
+# Segundos que el relay espera a que un cliente ACEPTE un evento antes de
+# descartarlo. Sin este tope, un cliente que deja de leer (móvil que pierde la
+# cobertura, WinTAK cerrado, portátil suspendido) llena su búfer TCP y el
+# `sendall` del broadcast se queda bloqueado para siempre. Y como el broadcast
+# lo ejecuta el hilo que LEE del emisor, ese hilo no vuelve a leer: TODOS los
+# clientes dejan de recibir CoT aunque sigan apareciendo "conectados" y el log
+# de eventos se detiene en seco. Un solo cliente muerto congela el hub entero
+# (incidente del 12-SEP-2026: "no veo ni los aviones ni Ucrania").
+RELAY_SEND_TIMEOUT = float(os.environ.get("RELAY_SEND_TIMEOUT", "5"))
 
 # sock -> (ip, port): permite loguear el origen de cada evento (diagnóstico)
 clients: dict[socket.socket, tuple] = {}
@@ -63,27 +74,58 @@ def log(msg: str) -> None:
     print(f"[{ts()}] {msg}", flush=True)
 
 
+def set_send_timeout(sock: socket.socket) -> None:
+    """Acota SOLO los envíos de un cliente (SO_SNDTIMEO).
+
+    No se usa `settimeout()/setblocking()`: son del socket entero y también
+    afectarían al `recv` del hilo que atiende a ese cliente, desconectando a
+    clientes sanos por estar ociosos. En Windows la opción espera milisegundos
+    (DWORD); en Linux, un struct timeval.
+    """
+    try:
+        if os.name == "nt":
+            sock.setsockopt(
+                socket.SOL_SOCKET, socket.SO_SNDTIMEO, int(RELAY_SEND_TIMEOUT * 1000)
+            )
+        else:
+            fmt = "ll" if struct.calcsize("l") == 8 else "ii"
+            sock.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_SNDTIMEO,
+                struct.pack(fmt, int(RELAY_SEND_TIMEOUT), 0),
+            )
+    except OSError:
+        # Si el SO no soporta la opción, el relay sigue funcionando como antes.
+        pass
+
+
 def broadcast(data: bytes, origin: socket.socket) -> None:
     """Envía un evento CoT completo a todos los clientes salvo el origen
-    (un TAK server real no devuelve el evento a quien lo emitió)."""
+    (un TAK server real no devuelve el evento a quien lo emitió).
+
+    Un cliente que no acepta el evento dentro de RELAY_SEND_TIMEOUT se
+    descarta: preferimos perder un cliente atascado a congelar el hub."""
     global event_count
     event_count += 1
     callsign = extract_callsign(data)
     with clients_lock:
         origin_addr = clients.get(origin, ("?", "?"))
         targets = [(s, send_locks[s]) for s in clients if s is not origin]
-    dead = []
+    dead: list[tuple[socket.socket, str]] = []
     for sock, lock in targets:
         try:
             with lock:
                 sock.sendall(data)
-        except OSError:
-            dead.append(sock)
+        except TimeoutError:
+            dead.append((sock, f"no lee (sin aceptar {RELAY_SEND_TIMEOUT:.0f}s)"))
+        except OSError as exc:
+            dead.append((sock, f"error de envío: {exc}"))
     if dead:
         with clients_lock:
-            for sock in dead:
-                clients.pop(sock, None)
+            for sock, reason in dead:
+                addr = clients.pop(sock, None)
                 send_locks.pop(sock, None)
+                log(f"cliente descartado {addr}: {reason}")
                 try:
                     sock.close()
                 except OSError:
@@ -142,6 +184,7 @@ def serve(listener: socket.socket, label: str) -> None:
     log(f"relay CoT {label} escuchando")
     while True:
         sock, addr = listener.accept()
+        set_send_timeout(sock)
         with clients_lock:
             clients[sock] = addr
             send_locks[sock] = threading.Lock()
