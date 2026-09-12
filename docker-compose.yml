@@ -132,6 +132,37 @@ services:
     depends_on:
       - cot-relay
 
+  # ---- Feeder ADS-B (aviones REALES, ADR 0010) ----
+  # Consulta la API pública de adsb.lol (red comunitaria de receptores ADS-B,
+  # datos ODbL, sin clave de API) y convierte cada aeronave en un evento CoT
+  # (a-f-A-C-F ala fija / a-f-A-C-H helicóptero) que manda al relay por la red
+  # Docker interna. No usa TLS: solo lee la API por HTTPS y escribe CoT local
+  # (el listener 8089 es para el feeder deepstate, que solo habla ssl://).
+  # Script propio con la librería estándar, como cot-relay.py: el feeder
+  # histórico para ADS-B (tak-feeder-adsb-one) está retirado desde que su API
+  # se apagó el 01-DIC-2025, y adsbcot no publica imagen Docker oficial.
+  adsb:
+    image: python:3.11-slim
+    container_name: adsb-feeder
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    volumes:
+      - ./adsb-feeder.py:/adsb-feeder.py:ro
+    environment:
+      FTS_HOST: "cot-relay"
+      FTS_PORT: "8087"
+      # Zona vigilada: Galicia (la demo). Cambia lat/lon para otra zona.
+      ADSB_LAT: "42.500000"
+      ADSB_LON: "-8.500000"
+      ADSB_RADIUS_NM: "60"       # máx 250
+      ADSB_POLL_INTERVAL: "10"   # servicio comunitario: no bajar
+      ADSB_MAX_AIRCRAFT: "150"   # tope por ciclo: evita inundar el relay
+      LOG_COT: "false"
+    command: ["python", "/adsb-feeder.py"]
+    depends_on:
+      - cot-relay
+
   # ---- Simulador (ADR 0004): perfil "sim", inactivo hasta que lo actives ----
   #   docker compose --profile sim up -d
   simulator:

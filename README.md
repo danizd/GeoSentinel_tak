@@ -21,6 +21,7 @@ CoT a los clientes (ADR 0008), así que el canal CoT lo sirve cot-relay.
 ├── .env.example          # plantilla de secretos -> copiar a .env
 ├── simulator.py          # telemetría CoT (PC o servidor)
 ├── cot-relay.py          # hub CoT que reenvía a todos los clientes (ADR 0008)
+├── adsb-feeder.py        # feeder ADS-B: aviones reales por CoT (ADR 0010)
 ├── start.bat             # arranque del simulador en el PC (Windows)
 ├── .gitignore            # protege .env, data/ y dted_work/
 ├── esri_world_imagery.xml # fuente de mapa satélite para WinTAK
@@ -336,6 +337,56 @@ Detalles:
 - Imagen oficial multi-arch (`ghcr.io/sgofferj/tak-feeder-deepstate:latest`):
   en ARM64 no necesita qemu (ADR 0007). Pin por digest al primer pull (ADR 0005).
 - Para pararlo: `docker compose stop deepstate`.
+
+## Feeder ADS-B (aviones reales, opcional)
+
+Muestra en el mapa el **tráfico aéreo real** de una zona: consulta la API pública de [adsb.lol](https://adsb.lol) (red comunitaria de receptores ADS-B, datos ODbL, sin clave de API) y convierte cada aeronave en un evento CoT (`a-f-A-C-F` ala fija, `a-f-A-C-H` helicóptero) que entra por el relay y llega a todos los clientes, WinTAK incluido.
+
+```text
+adsb.lol (HTTPS) ──► adsb-feeder.py ──TCP 8087 (red Docker)──► cot-relay ──► WinTAK
+```
+
+> **Por qué es un script propio (ADR 0010):** el feeder de la misma familia que `deepstate` para ADS-B (`tak-feeder-adsb-one`) está **retirado** — su API se apagó el 01-DIC-2025 — y `adsbcot`, la alternativa, no publica imagen Docker oficial (habría que construirla). `adsb-feeder.py` usa solo la librería estándar, como `cot-relay.py` y `simulator.py`.
+
+Arranque (queda activo, como el feeder deepstate):
+
+```bash
+docker compose up -d adsb            # o: docker compose up -d
+docker compose logs -f adsb          # "N aeronaves en el radio, N enviadas"
+docker compose stop adsb
+```
+
+Configuración (variables del servicio en `docker-compose.yml`):
+
+| Variable | Por defecto | Significado |
+|---|---|---|
+| `ADSB_LAT` / `ADSB_LON` | Galicia (42.5, -8.5) | Centro del radio a vigilar |
+| `ADSB_RADIUS_NM` | `60` | Radio en millas náuticas (máx `250`) |
+| `ADSB_POLL_INTERVAL` | `10` | Segundos entre consultas a la API |
+| `ADSB_MAX_AIRCRAFT` | `150` | Tope de aeronaves por ciclo |
+| `ADSB_API_URL` | `https://api.adsb.lol/v2/point` | Endpoint (formato ADSBExchange v2) |
+| `LOG_COT` | `false` | Imprime cada evento CoT (diagnóstico) |
+| `DRY_RUN` | `false` | No conecta al relay: imprime los eventos y sale |
+
+Verificación:
+
+```bash
+# 1. El feeder ve tráfico y lo reenvía
+docker compose logs -f adsb          # "49 aeronaves en el radio, 49 enviadas"
+docker compose logs -f cot-relay     # "evento #N RYR421P ... -> broadcast a 1 cliente(s)"
+
+# 2. Prueba aislada, sin tocar el relay (una sola petición a la API)
+docker compose run --rm -e DRY_RUN=true -e ADSB_MAX_AIRCRAFT=2 adsb
+```
+
+En WinTAK, navega a la zona configurada (Galicia por defecto): verás los aviones moverse con su callsign.
+
+Notas:
+
+- **Es un servicio comunitario**: no bajes `ADSB_POLL_INTERVAL` (10 s sobra: el `stale` de 60 s cubre varios ciclos). Si aparece `HTTP Error 429: Too Many Requests`, súbelo — el feeder hace backoff solo y no muere.
+- Las aeronaves **en tierra se descartan** (`alt_baro: "ground"`) para no llenar los aeropuertos de contactos inmóviles.
+- El **UID es determinista** (`geosentinel-adsb.<hex ICAO>`): la misma aeronave actualiza el mismo contacto, sin fantasmas al reiniciar (ADR 0004).
+- Datos **reales** (adsb.lol, licencia ODbL): conviven con los `RESCUE-0N` ficticios de Chamoli y con los marcadores de deepstate en el mismo mapa.
 
 ## Mantenimiento
 
