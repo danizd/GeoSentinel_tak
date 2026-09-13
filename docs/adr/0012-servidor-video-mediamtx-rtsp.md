@@ -59,7 +59,8 @@
   - **Pendiente de comprobar en el servidor** (requiere publicar de verdad):
     que el móvil con TAK ICU publica en 8554 con el alias como ruta y que
     WinTAK lo reproduce con *Reliable P2P Connection* activado. El paso a paso
-    está en el README ("Vídeo en directo").
+    está en el README ("Vídeo en directo", pasos 1–4; el puntero CoT del paso
+    4 llegó después, en el ADR 0013).
 - **Consecuencias:**
   - Un canal de vídeo más en la demo, desacoplado del CoT: si MediaMTX se cae,
     el mapa y los feeders siguen intactos (y al contrario).
@@ -67,9 +68,10 @@
     a cambio, publicar o ver el vídeo exige autenticación desde el primer día
     (§6 de `especificaciones.md` ya documenta la lección de las credenciales
     por defecto).
-  - El vídeo **no** aparece como icono de cámara en el mapa: eso exigiría un
-    evento CoT `b-i-v` que nada del proyecto emite. TAK ICU puede anotar el
-    stream con KLV, lo que sí lo sitúa en el mapa; queda como prueba pendiente.
+  - El vídeo **no** aparece como icono de cámara en el mapa: eso exigía un
+    evento CoT con `<__video>` que nada del proyecto emitía. **Resuelto en el
+    ADR 0013** (`video-pointer.py` + servicio `video-cot`); encontrar el tipo
+    exacto del evento es la prueba que queda en el servidor.
   - El 8554 admite también RTMP (1935) y WebRTC (8889) si en el futuro se
     publica desde otras apps (Larix, navegador); hoy no se publican esos
     puertos para no ampliar la superficie.

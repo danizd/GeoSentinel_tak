@@ -23,6 +23,7 @@ CoT a los clientes (ADR 0008), así que el canal CoT lo sirve cot-relay.
 ├── cot-relay.py          # hub CoT que reenvía a todos los clientes (ADR 0008)
 ├── adsb-feeder.py        # feeder ADS-B: aviones reales por CoT (ADR 0010)
 ├── mediamtx.yml          # servidor RTSP de vídeo: configuración (ADR 0012)
+├── video-pointer.py      # puntero CoT del vídeo: icono de cámara (ADR 0013)
 ├── start.bat             # arranque del simulador en el PC (Windows)
 ├── .gitignore            # protege .env, data/ y dted_work/
 ├── esri_world_imagery.xml # fuente de mapa satélite para WinTAK
@@ -50,6 +51,7 @@ docker run --privileged --rm tonistiigi/binfmt --install all
 # 4. Secretos
 cp .env.example .env
 #   editar .env: reemplazar cada "cambia-esto" por valores largos y aleatorios
+#   y poner la IP pública del servidor en VIDEO_RTSP_URL (ej. rtsp://IP:8554/MOVILGALICIA)
 #   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 # 5. Permisos del bind mount del core: FTS corre como UID 999 (cuenta de
@@ -198,12 +200,16 @@ cd ~/docker/GeoSentinel_tak       # la carpeta del despliegue (en el quickstart,
 # 1. Contraseña del vídeo: añade UNA línea a .env (no la repitas si ya está)
 python3 -c "import secrets; print('MEDIAMTX_PASSWORD=' + secrets.token_urlsafe(16))" >> .env
 
-# 2. Arrancar (sin perfil: igual que el relay y los feeders)
-docker compose up -d mediamtx
+# 2. URL del stream tal como lo verá WinTAK (IP pública + ruta del stream):
+#    VIDEO_RTSP_URL=rtsp://IP_PUBLICA:8554/MOVILGALICIA   <- añade esta línea a .env
+
+# 3. Arrancar (sin perfil: igual que el relay y los feeders)
+docker compose up -d mediamtx video-cot
 docker compose logs -f mediamtx     # verás los listeners RTSP y HLS abiertos
+docker compose logs -f video-cot    # "puntero MOVILGALICIA enviado" cada 60 s
 ```
 
-> Sin `MEDIAMTX_PASSWORD` en `.env`, `docker compose` **aborta** con un mensaje explícito (`required variable MEDIAMTX_PASSWORD is missing a value`) en vez de arrancar el servidor con la contraseña en blanco. Es a propósito: el 8554 se publica a Internet.
+> Sin `MEDIAMTX_PASSWORD` ni `VIDEO_RTSP_URL` en `.env`, `docker compose` **aborta** con un mensaje explícito (`required variable … is missing a value`) en vez de arrancar el servidor con la contraseña en blanco o publicar un icono que apunta a un servidor inexistente. Es a propósito: el 8554 se publica a Internet.
 
 Y abre el **8554/tcp** en Oracle Security List / ufw (el **8888** solo si quieres comprobar por navegador). NPM no puede proxear RTSP: es socket TCP directo, igual que el canal CoT.
 
@@ -264,7 +270,37 @@ rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/MOVILGALICIA
 - No se ve en ninguna parte y el log de MediaMTX no registra publicación → el publicador no llega: revisa **8554/tcp** en Oracle Security List y ufw, y la IP del servidor.
 - Rechaza la publicación o pide credenciales (`authentication failed` en el log) → usuario `takvideo` y la contraseña de `MEDIAMTX_PASSWORD`. Si acabas de cambiarla, `docker compose up -d mediamtx`: las variables de entorno se leen al arrancar, no se recargan en caliente.
 - TAK ICU no arranca → **fix GPS** activo y **alias sin espacios**.
-- Se ve el vídeo pero **no aparece ningún icono de cámara en el mapa**: es lo esperado. El puntero del feed viajaría en un evento CoT `b-i-v` y nada del proyecto lo emite todavía.
+- Se ve el vídeo pero **no aparece ningún icono de cámara en el mapa**: mira el **paso 4** (el puntero CoT). Si ya está arrancado, `docker compose logs video-cot` debe decir `puntero … enviado` cada 60 s, y `docker compose logs cot-relay` debe mostrar el evento con callsign del feed.
+
+### Paso 4 — Icono de cámara en el mapa (puntero CoT)
+
+Ver el vídeo y tener un sitio donde pulsarlo en el mapa son dos cosas distintas: el vídeo va por RTSP (paso 3), y el **icono de cámara** lo crea un evento CoT con `<__video>` — el servicio **`video-cot`** (`video-pointer.py`, ADR 0013), que emite ese puntero cada 60 s al relay.
+
+Solo hay que darle el URL del stream (paso 1) y arrancarlo:
+
+```bash
+docker compose up -d video-cot
+docker compose logs -f video-cot     # "puntero MOVILGALICIA enviado" cada 60 s
+```
+
+| Variable | Por defecto | Significado |
+|---|---|---|
+| `VIDEO_RTSP_URL` | — (obligatoria) | URL que abre WinTAK, sin credenciales (el CoT va en claro) |
+| `VIDEO_LAT` / `VIDEO_LON` / `VIDEO_HAE` | Chamoli (30.484, 79.732, 3900 m) | Dónde se pinta el icono: la posición del móvil que publica |
+| `VIDEO_COT_TYPE` | `b-i-v` | Tipo CoT del evento. Alternativa: `b-m-p-s-p-loc` (el que emiten TAK ICU/OpenTAK ICU) |
+| `VIDEO_ALIAS` | la ruta del URL | Nombre del icono y del feed |
+| `VIDEO_RESEND_SECONDS` / `VIDEO_STALE_SECONDS` | `60` / `300` | Refresco del puntero y caducidad del evento |
+| `LOG_COT` | `false` | Imprime cada evento CoT (diagnóstico) |
+
+Prueba aislada, sin tocar el relay (imprime el evento y sale):
+
+```bash
+docker compose run --rm -e DRY_RUN=true video-cot
+```
+
+> **En WinTAK:** el icono aparece donde digan `VIDEO_LAT`/`VIDEO_LON`. Al pulsarlo, la herramienta **Video** abre el feed; la **primera vez pide usuario y contraseña** (`takvideo` / `MEDIAMTX_PASSWORD`), porque el puntero CoT viaja en claro y **no lleva credenciales** a propósito.
+>
+> **Si el icono no aparece** (o sale genérico), cambia el tipo del evento sin tocar código: `VIDEO_COT_TYPE: "b-m-p-s-p-loc"` en `docker-compose.yml` y `docker compose up -d video-cot`. Los dos tipos están documentados en ADR 0013 con su origen.
 
 ## Feeder deepstatemap.live (datos OSINT de Ucrania, opcional)
 

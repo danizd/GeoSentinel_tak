@@ -198,6 +198,40 @@ services:
       # dejar la contraseña en blanco sin que nadie se entere.
       MTX_AUTHINTERNALUSERS_0_PASS: "${MEDIAMTX_PASSWORD:?define MEDIAMTX_PASSWORD en .env (ver .env.example)}"
 
+  # ---- Puntero CoT del vídeo (ADR 0013) ----
+  # Emite cada minuto un evento CoT con <__video> para que WinTAK pinte el
+  # icono de cámara en el mapa y sepa qué URL RTSP abrir. El vídeo en sí sigue
+  # yendo por MediaMTX: esto solo es el puntero (CoT nunca lleva fotogramas).
+  # Sin perfil, como mediamtx y adsb: si no hay puntero, el directo no tiene
+  # dónde pulsar en el mapa.
+  video-cot:
+    image: python:3.11-slim
+    container_name: video-cot
+    restart: unless-stopped
+    networks:
+      - proxy_network
+    volumes:
+      - ./video-pointer.py:/video-pointer.py:ro
+    environment:
+      FTS_HOST: "cot-relay"
+      FTS_PORT: "8087"
+      # URL del stream en MediaMTX, sin credenciales (el CoT va en claro y lo
+      # recibe todo el mundo; WinTAK pide usuario y contraseña al reproducir).
+      # `:?` aborta el arranque si falta, en vez de publicar un icono que
+      # apunta a un servidor inexistente.
+      VIDEO_RTSP_URL: "${VIDEO_RTSP_URL:?define VIDEO_RTSP_URL en .env (ej. rtsp://TU_IP:8554/MOVILGALICIA)}"
+      # Posición del icono: por defecto el centro del escenario (Chamoli).
+      VIDEO_LAT: "30.484000"
+      VIDEO_LON: "79.732000"
+      VIDEO_HAE: "3900.0"
+      VIDEO_COT_TYPE: "b-i-v"
+      VIDEO_RESEND_SECONDS: "60"
+      VIDEO_STALE_SECONDS: "300"
+      LOG_COT: "false"
+    command: ["python", "/video-pointer.py"]
+    depends_on:
+      - cot-relay
+
   # ---- Simulador (ADR 0004): perfil "sim", inactivo hasta que lo actives ----
   #   docker compose --profile sim up -d
   simulator:
