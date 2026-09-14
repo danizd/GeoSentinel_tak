@@ -181,11 +181,13 @@ WinTAK necesita datos DTED para dibujar relieve. Para cualquier región del mund
 
 ## Vídeo en directo (cámara del móvil y webcam del PC)
 
-El vídeo **no viaja por el canal CoT**: CoT solo transporta el puntero (la URL del stream), no los fotogramas. Para ver una cámara en WinTAK hacen falta dos piezas: un **servidor RTSP** donde se publica la señal (MediaMTX) y un **publicador** (el plugin TAK ICU en Android, FFmpeg en el PC). WinTAK la reproduce desde su herramienta **Video**.
+El vídeo **no viaja por el canal CoT**: CoT solo transporta el puntero (la URL del stream), no los fotogramas. Para ver una cámara en WinTAK hacen falta dos piezas: un **servidor RTSP** donde se publica la señal (MediaMTX) y un **publicador** (**OpenTAK ICU** en Android, FFmpeg en el PC). WinTAK la reproduce desde su herramienta **Video**.
+
+> **El móvil no necesita ATAK ni conexión CoT para que su cámara se vea en WinTAK:** publica por RTSP (paso 2A) y WinTAK consume ese stream (paso 3). El canal CoT solo aporta el **icono de cámara** en el mapa (paso 4); sin él el vídeo se ve igual, tecleando la dirección en la herramienta Vídeo.
 
 | Dónde | Qué hace falta |
 |---|---|
-| Móvil Android | ATAK-CIV (reproduce) + plugin **TAK ICU** (publica la cámara) |
+| Móvil Android | ATAK-CIV (reproduce) + app **OpenTAK ICU** (publica la cámara) |
 | PC | **FFmpeg** publicando la webcam |
 | Servidor | **MediaMTX** como servidor RTSP (paso 1, común a los dos casos) |
 | WinTAK | Herramienta **Video** apuntando al stream |
@@ -213,18 +215,33 @@ docker compose logs -f video-cot    # "puntero MOVILGALICIA enviado" cada 60 s
 
 Y abre el **8554/tcp** en Oracle Security List / ufw (el **8888** solo si quieres comprobar por navegador). NPM no puede proxear RTSP: es socket TCP directo, igual que el canal CoT.
 
-### Paso 2A — Publicar desde el móvil Android (ATAK-CIV + TAK ICU)
+### Paso 2A — Publicar desde el móvil Android (OpenTAK ICU)
 
-ATAK-CIV por sí solo **no emite** la cámara: solo reproduce streams. Para publicar hace falta el plugin **TAK ICU** (gratuito, del TAK Product Center), que crea un icono de app aparte en el móvil.
+ATAK-CIV por sí solo **no emite** la cámara: solo reproduce streams. La cámara la publica **OpenTAK ICU** ([brian7704/OpenTAK_ICU](https://github.com/brian7704/OpenTAK_ICU)), una **app independiente** (no un plugin dentro de ATAK) que emite RTSP hacia MediaMTX.
 
-1. Instala ATAK desde [tak.gov](https://tak.gov): los plugins se instalan desde la propia app, la versión de Play Store los tiene restringidos.
-2. ATAK → **Settings → Plugins → TAK ICU → Install/Enable**. Aparece un **icono aparte** llamado *TAK ICU* (puede que haya que añadirlo a la pantalla de inicio).
-3. Abre **TAK ICU** → ☰ → **Settings** → **Broadcast Preferences**:
-   - **Destination Type:** `Wowza Server`
-   - **Broadcast Alias:** `MOVILGALICIA` — **una sola palabra, sin espacios** (es la ruta del stream; con un espacio el broadcast falla)
-   - **Wowza Server IP:** la IP de tu servidor
-   - **Wowza Server Port:** `8554`
-4. Con **fix GPS** (TAK ICU lo exige: sin él no ancla el vídeo al mapa y puede no arrancar), marca **Broadcast** y pulsa el botón **Broadcast/Record**.
+> **Por qué no el plugin TAK ICU de tak.gov** (la elección que describía el ADR 0012): en el móvil de la demo, *ATAK → Settings → Plugins → TAK ICU → Install/Enable* se queda en un **bucle de permisos** que no deja avanzar. OpenTAK ICU es su hermano de código abierto — el mismo código base del que el ADR 0013 copió la estructura de `<__video>`, así que sirve el mismo formato de puntero —, se instala como **APK suelto** (no pasa por la app de ATAK) y publica con **usuario/contraseña** y sobre **TCP**, que es justo lo que MediaMTX exige al publicar (ADR 0012).
+
+1. Descarga el APK del [último release](https://github.com/brian7704/OpenTAK_ICU/releases/latest) y instálalo en el móvil (habrá que permitir la instalación desde esa fuente).
+2. Al abrirla por primera vez, el *onboarding* pide los permisos: cámara, micrófono y ubicación. En la ubicación, **Allow all the time** (sin ella la app publica igual, pero **no emite CoT**).
+3. ☰ → **Settings → Streaming Settings**:
+
+   | Campo (OpenTAK ICU) | Valor | Por qué |
+   |---|---|---|
+   | *Stream video* | ON | — |
+   | *Stream Protocol* | `rtsp` | MediaMTX publica y sirve por RTSP en 8554 (no RTMP ni SRT) |
+   | *Stream Address* | IP pública del servidor | — |
+   | *Stream Port* | `8554` | el valor por defecto |
+   | *Stream Path* | `MOVILGALICIA` | **es la ruta del stream** y debe coincidir con `VIDEO_RTSP_URL` de `.env`: **una sola palabra, sin espacios** (misma lección que el `alias` de TAK ICU) |
+   | *Username* / *Password* | `takvideo` / `MEDIAMTX_PASSWORD` | MediaMTX exige autenticación para publicar (ADR 0012) |
+   | *TCP* | ON | RTSP sobre TCP: obligatorio con NAT o firewall por medio |
+   | *Server uses Self-Signed Certificate* | OFF | solo aplica a RTSPS/RTMPS; aquí el 8554 va en claro |
+
+4. **Video Settings**: los defaults sirven (H264, 1080p, 30 fps, bitrate 1000 kbps, *Adaptive Bitrate* ON). **Audio Settings**: *Enable Audio* viene ON; desactívalo si no quieres audio en el canal (el vídeo va igual).
+5. Vuelve a la pantalla principal y pulsa **Start Streaming** (el estado pasa a `Stream in progress`).
+
+El mismo stream se ve ya en el navegador (`http://IP_SERVIDOR:8888/MOVILGALICIA`, HLS) y en WinTAK (paso 3).
+
+> **Con la posición real del móvil, en vez de la de `.env`:** OpenTAK ICU sabe emitir su propio CoT. **Settings → TAK Server Preferences** → *Send Location CoTs to a TAK server* ON, dirección del servidor, *TAK Server Port* `8087`, *Connect to the TAK Server via SSL* **OFF** (la fase humo va en claro) y *Enable TAK Server Authentication* OFF. Deja *Send Stream Connection Details* **OFF** (desde el ADR 0014 la lectura ya no pide credenciales, pero así el único puntero que llega al mapa es el del paso 4). Ten en cuenta que **cada puntero es un icono**: si activas el CoT de la app, para el `video-cot` del paso 4 (`docker compose stop video-cot`) o verás el mismo feed dos veces en el mapa.
 
 ### Paso 2B — Publicar desde el PC (webcam con FFmpeg)
 
@@ -248,28 +265,38 @@ WinTAK → herramienta **Video** → **+** (añadir stream):
 | Campo | Valor |
 |---|---|
 | Type | `rtsp` |
-| Address | IP del servidor (o `localhost` si publicas en el propio PC) |
+| Address | solo la dirección: `fts.movilab.es` (o `localhost` si publicas en el propio PC) |
 | Port | `8554` |
 | Path | `MOVILGALICIA` (móvil) · `webcam` (PC) |
-| Username / Password | `takvideo` / el de `mediamtx.yml` |
 | Reliable P2P Connection | **ON** — usa TCP; imprescindible si hay NAT o firewall (tu caso) |
+
+> **El campo Address solo admite la dirección, nunca credenciales:** ni `rtsp://` ni `usuario:contraseña@` (WinTAK y ATAK no los aceptan en RTSP; la URL con credenciales dispara *Invalid IP … must be multicast or blank for unicast*). Por eso la lectura en MediaMTX es **anónima** (ADR 0014): **publicar** sigue exigiendo `takvideo` + `MEDIAMTX_PASSWORD` (pasos 2A/2B), pero **ver** ya no pide nada — el 8554 está a Internet y la **ruta del stream es el secreto** del feed.
 
 **Comprueba el stream antes de tocar WinTAK** (descarta la mayoría de los problemas):
 
 ```text
-# en el navegador del PC (HLS; pide usuario y contraseña)
+# en el navegador del PC (HLS; sin credenciales desde el ADR 0014)
 http://IP_SERVIDOR:8888/MOVILGALICIA
 
-# o en VLC
+# o en VLC (el usuario/contraseña sigue valiendo si quieres usarlos)
 rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/MOVILGALICIA
 ```
 
 **Si no se ve:**
 
-- En VLC se ve pero WinTAK no → activa **Reliable P2P Connection** (muchos operadores bloquean el UDP del RTSP) y revisa usuario/contraseña.
+- En VLC se ve pero WinTAK no → activa **Reliable P2P Connection** (muchos operadores bloquean el UDP del RTSP) y asegúrate de que el campo **Address** lleva solo la dirección (`fts.movilab.es` o `fts.movilab.es:8554/MOVILGALICIA` si no hay campos de puerto/ruta aparte), **sin** `usuario:contraseña@`: el *Invalid IP* de WinTAK al pegarla es esa URL con credenciales, que el cliente no acepta (ADR 0014).
+- **VLC: «Su entrada no puede abrirse: VLC es incapaz de abrir el MRL»** → el mensaje es genérico: VLC lo dice igual si las credenciales fallan, si nadie publica, si el puerto está cerrado o si el UDP está bloqueado. Dos pistas rápidas: si el error sale **al instante**, el servidor contestó (en `docker compose logs mediamtx` aparece la petición con su resultado); si tarda ~20 s, el corte está en la red. Y VLC usa **UDP** por defecto, como WinTAK antes de activar *Reliable P2P*, así que repite la prueba forzando TCP: `vlc --network-caching=50 --rtsp-tcp "rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/MOVILGALICIA"`.
+- **Las dos líneas del log que deciden el caso:** `no stream is available on path 'MOVILGALICIA'` significa que el servidor, el 8554 y las credenciales están bien y **solo falta el publicador** (la línea siguiente, `invalid SETUP path … unsupported RTSP dialect`, es VLC reintentando tras ese rechazo: ruido, no otra avería). `authentication failed` sí es credenciales. Con la app emitiendo, el log muestra una conexión desde **la IP de salida del móvil** (si va por la misma WiFi que el PC comparten IP pública y solo cambia el puerto) y las líneas de la ruta `MOVILGALICIA`: si no aparece ninguna conexión del móvil, el problema está en el móvil o en su red, no en el servidor.
+- **Cuando el móvil publica de verdad** el log lo canta: `stream is available and online, N tracks (H264, …)`. Si justo después aparece `RTP packets are too big (1460 > 1440), remuxing them into smaller ones`, es **informativo**: MediaMTX reparte esos paquetes en otros más pequeños y el vídeo se ve igual.
+- **La ruta solo existe mientras alguien publica** (MediaMTX re-sirve el directo, no lo guarda): con el publicador parado, VLC falla con el mismo mensaje aunque la contraseña sea correcta. Para probar la cadena sin depender del móvil, publica una señal de prueba desde el PC y ábrela en VLC con `--rtsp-tcp`:
+  ```powershell
+  ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=25 -c:v libx264 -preset ultrafast -tune zerolatency -f rtsp rtsp://takvideo:CONTRASEÑA@IP_SERVIDOR:8554/demo
+  ```
+  Si esa se ve, MediaMTX, el 8554 y las credenciales están bien y lo que falla es el publicador (paso 2A).
 - No se ve en ninguna parte y el log de MediaMTX no registra publicación → el publicador no llega: revisa **8554/tcp** en Oracle Security List y ufw, y la IP del servidor.
 - Rechaza la publicación o pide credenciales (`authentication failed` en el log) → usuario `takvideo` y la contraseña de `MEDIAMTX_PASSWORD`. Si acabas de cambiarla, `docker compose up -d mediamtx`: las variables de entorno se leen al arrancar, no se recargan en caliente.
-- TAK ICU no arranca → **fix GPS** activo y **alias sin espacios**.
+- OpenTAK ICU no publica → *Stream Path* **sin espacios**, usuario/contraseña de MediaMTX (`takvideo` / `MEDIAMTX_PASSWORD`), *TCP* ON y protocolo `rtsp`. En el log de MediaMTX, `authentication failed` significa credenciales; que no aparezca nada significa que la app no llega (8554/tcp en el firewall y la IP del servidor).
+- OpenTAK ICU se cierra o no arranca el stream → revisa los permisos del *onboarding* (cámara, micrófono, ubicación) y prueba otro códec en **Video Settings**.
 - Se ve el vídeo pero **no aparece ningún icono de cámara en el mapa**: mira el **paso 4** (el puntero CoT). Si ya está arrancado, `docker compose logs video-cot` debe decir `puntero … enviado` cada 60 s, y `docker compose logs cot-relay` debe mostrar el evento con callsign del feed.
 
 ### Paso 4 — Icono de cámara en el mapa (puntero CoT)
@@ -298,7 +325,7 @@ Prueba aislada, sin tocar el relay (imprime el evento y sale):
 docker compose run --rm -e DRY_RUN=true video-cot
 ```
 
-> **En WinTAK:** el icono aparece donde digan `VIDEO_LAT`/`VIDEO_LON`. Al pulsarlo, la herramienta **Video** abre el feed; la **primera vez pide usuario y contraseña** (`takvideo` / `MEDIAMTX_PASSWORD`), porque el puntero CoT viaja en claro y **no lleva credenciales** a propósito.
+> **En WinTAK:** el icono aparece donde digan `VIDEO_LAT`/`VIDEO_LON`. Al pulsarlo, la herramienta **Video** abre el feed **sin pedir credenciales** (la lectura en MediaMTX es anónima desde el ADR 0014; el puntero CoT viaja en claro y **no lleva credenciales** a propósito).
 >
 > **Si el icono no aparece** (o sale genérico), cambia el tipo del evento sin tocar código: `VIDEO_COT_TYPE: "b-m-p-s-p-loc"` en `docker-compose.yml` y `docker compose up -d video-cot`. Los dos tipos están documentados en ADR 0013 con su origen.
 

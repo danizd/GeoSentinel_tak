@@ -14,16 +14,29 @@
 # esas variables: siguen exigiendo usuario y contraseña, nunca dejan el
 # servidor abierto (el 8554 se publica a Internet).
 
-# Autenticación interna (la de defecto). Sin esta clave, MediaMTX acepta a
-# cualquier cliente: publicar y ver el vídeo quedaría al alcance de cualquiera.
+# Autenticación interna (la de defecto). PUBLICAR exige credenciales; LEER es
+# anónimo a propósito (ADR 0014): WinTAK/ATAK no saben mandar usuario y
+# contraseña en un stream RTSP (VLC sí), así que la lectura va sin ellas y el
+# secreto del feed pasa a ser la propia ruta (quien la conozca ve el vídeo).
+# El índice 0 lo ocupa el usuario de PUBLICAR: el compose sobrescribe "por
+# posición" (MTX_AUTHINTERNALUSERS_0_USER/_PASS), y MediaMTX fusiona los
+# permisos de todos los usuarios que coinciden, así que el anónimo (índice 1)
+# da lectura a cualquiera sin tocar la exigencia de credenciales al publicar.
 authInternalUsers:
-  - user: CAMBIA_ESTO     # sobrescrito por MTX_AUTHINTERNALUSERS_0_USER
+  - user: CAMBIA_ESTO     # índice 0: sobrescrito por MTX_AUTHINTERNALUSERS_0_USER
     pass: CAMBIA_ESTO     # sobrescrito por MTX_AUTHINTERNALUSERS_0_PASS
     ips: []               # lista vacía = cualquier IP de origen
     permissions:
-      - action: publish    # publicar: TAK ICU (móvil) y FFmpeg (PC)
-      - action: read       # ver: WinTAK, VLC, navegador
+      - action: publish    # publicar: OpenTAK ICU (móvil) y FFmpeg (PC)
+      - action: read       # ver con credenciales: VLC, navegador (HLS)
       - action: playback   # navegación dentro del stream (HLS)
+  # Lectura anónima (índice 1). `user: any` coincide con cualquiera, incluidos
+  # los clientes que no mandan credenciales; `pass` vacío no se usa en ese caso.
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read    # ver: WinTAK, ATAK, VLC, navegador, sin credenciales
 
 # Cualquier ruta se crea al publicar: el alias del móvil (MOVILGALICIA), webcam,
 # demo… Sin esto habría que declarar cada ruta una a una.

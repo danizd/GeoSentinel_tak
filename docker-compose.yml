@@ -169,7 +169,7 @@ services:
 
   # ---- Servidor de vídeo RTSP (ADR 0012) ----
   # MediaMTX recibe el directo de una cámara y lo re-sirve a los clientes TAK.
-  # Publican: el móvil con el plugin TAK ICU (alias = ruta del stream) y el PC
+  # Publican: el móvil con la app OpenTAK ICU (Stream Path = ruta del stream) y el PC
   # con FFmpeg y la webcam. Consume WinTAK desde su herramienta "Video".
   # El vídeo NO viaja por CoT: CoT solo lleva el puntero (la URL del feed),
   # así que esto es un canal aparte del relay, con su propio puerto.
